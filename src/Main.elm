@@ -1,9 +1,10 @@
 module Main exposing (..)
 
-import Array exposing (Array)
+import Array
 import Browser
-import Csv exposing (Csv)
+import Csv
 import Data exposing (toDisplayList)
+import Dict exposing (Dict, empty, get)
 import Element exposing (..)
 import Element.Background as BG
 import Element.Font as Font
@@ -11,6 +12,7 @@ import Geodesy exposing (Coordinates, Unit(..), distance)
 import Html exposing (Html)
 import Http
 import Task exposing (Task)
+import Time exposing (Posix)
 
 
 
@@ -25,16 +27,21 @@ type Status
 
 
 type alias Model =
-    { routes : List AirRoute
-    , airports : List Airport
+    { routes : List Route
+    , airports : Dict AirportId Airport
     , state : Status
-    , toDisplay : List AirRoute
+    , toDisplay : List Route
     , airportData : List (List String)
+    , routeData : List (List String)
+    , aniMsg : List AniMsg
+    , timeZone : Time.Zone
+    , time : Posix
+    , speed : Float
     }
 
 
 type alias Airport =
-    { id : Int
+    { id : AirportId
     , name : String
     , city : String
     , location : Coordinates
@@ -48,37 +55,44 @@ portToString ap =
     ]
 
 
-type alias AirRoute =
-    { airlineId : Int
+type alias Route =
+    { airlineId : AirlineId
     , airline : String
-    , origin : Airport
-    , destinatin : Airport
+    , origin : AirportId
+    , destination : AirportId
     , distance : Int
     }
 
 
-type alias AirRouteIntermediate =
-    { airlineId : Int
+type alias RouteIntermediate =
+    { airlineId : AirlineId
     , airline : String
-    , originId : Int
-    , destinatinId : Int
+    , originId : AirportId
+    , destinatinId : AirportId
     }
 
 
 init : ( Model, Cmd Msg )
 init =
-    ( { routes = [], airports = [], state = Init, toDisplay = toDisplayList, airportData = [] }, getAirports )
+    ( initialModel, getAirports )
 
 
 
 ---- UPDATE ----
 
 
+type AniMsg
+    = ParsePort
+    | DoneParsePort
+    | ParseRoute
+    | DoneParseRoute
+
+
 type Msg
-    = NoOp
-    | GotAirports (Result Http.Error String)
+    = GotAirports (Result Http.Error String)
     | GotRoutes (Result Http.Error String)
-    | OneAirportParsed (List (List String))
+    | AdjustTimeZone Time.Zone
+    | Tick Posix
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -91,31 +105,26 @@ update msg model =
                         splitData =
                             data |> Csv.split
                     in
-                    ( { model | airportData = splitData }, Task.perform parseOnePort (Task.succeed model.airportData) )
+                    ( { model | airportData = splitData, aniMsg = List.repeat (List.length splitData) ParsePort }, getRoutes )
 
                 Err err ->
                     let
                         debug =
-                            Debug.log "getting airports failed" err
+                            Debug.log "get airports failed" err
                     in
                     ( model, Cmd.none )
-
-        OneAirportParsed airportData ->
-            case airportData of
-                head :: tail ->
-                    ( { model | airports = buildAirport head :: model.airports, airportData = tail }, Task.perform parseOnePort (Task.succeed model.airportData) )
-
-                [] ->
-                    ( model, getAirRoutes )
 
         GotRoutes result ->
             case result of
                 Ok data ->
                     let
-                        routes =
-                            dataToAirRoutes model.airports data
+                        splitData =
+                            data |> Csv.split
+
+                        newAniMsg =
+                            List.append model.aniMsg (List.repeat (List.length splitData) ParseRoute)
                     in
-                    ( { model | routes = routes }, Cmd.none )
+                    ( { model | routeData = splitData, aniMsg = newAniMsg }, Cmd.none )
 
                 Err err ->
                     let
@@ -124,21 +133,43 @@ update msg model =
                     in
                     ( model, Cmd.none )
 
-        _ ->
-            ( model, Cmd.none )
+        Tick _ ->
+            case model.aniMsg of
+                head :: tail ->
+                    case head of
+                        ParsePort ->
+                            let
+                                ( airports, airportData ) =
+                                    parseOneAirport model.airports model.airportData
+                            in
+                            ( { model | airports = airports, airportData = airportData, aniMsg = tail }, Cmd.none )
+
+                        ParseRoute ->
+                            let
+                                ( routes, routeData ) =
+                                    parseOneRoute model.routes model.routeData model.airports
+                            in
+                            ( { model | routes = routes, routeData = routeData, aniMsg = tail }, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                _ ->
+                    ( model, Cmd.none )
+
+        AdjustTimeZone newZone ->
+            ( { model | timeZone = newZone }
+            , Cmd.none
+            )
 
 
-parseOnePort : List (List String) -> Msg
-parseOnePort data =
-    let
-        d =
-            Debug.log "Parse One Airport" data
-    in
-    Debug.todo "parseOnePort"
+
+-- -- SUBSCRIPTION -- --
 
 
-
----- VIEW ----
+subscriptions : Model -> Sub Msg
+subscriptions model =
+    Time.every model.speed Tick
 
 
 view : Model -> Html Msg
@@ -153,13 +184,13 @@ view model =
 
 resultTable : Model -> Element Msg
 resultTable model =
-    column [ centerX ] <| List.map routeView model.toDisplay
+    column [ centerX ] <| List.map (routeView model.airports) model.toDisplay
 
 
 statusRow : Model -> Element Msg
 statusRow model =
     row [ paddingXY 200 30, spacing 50 ]
-        [ el [] <| text <| "routes: " ++ length model.routes
+        [ el [] <| text <| "routes: " ++ String.fromInt (List.length model.routes)
         , el [] <| text <| "airports: " ++ length model.airports
         ]
 
@@ -169,34 +200,53 @@ debugView list =
     column [ Font.size 10, Font.color (rgb 0.5 0.5 0.5), centerX, spacing 3 ] <| [ text <| Debug.toString <| List.map (\item -> List.concat item) ]
 
 
-routeView : AirRoute -> Element Msg
-routeView ar =
+routeView : Dict AirportId Airport -> Route -> Element Msg
+routeView airports ar =
+    let
+        getPort =
+            getAirPortById airports
+    in
     row [ spaceEvenly ]
         [ el [ paddingXY 10 3 ] <| text <| "id: " ++ String.fromInt ar.airlineId
         , el [ paddingXY 10 3 ] <| text <| "flightNr: " ++ ar.airline
-        , el [ paddingXY 10 3 ] <| text <| "from: " ++ airportToString ar.origin
-        , el [ paddingXY 10 3 ] <| text <| "to: " ++ airportToString ar.destinatin
-        , el [ paddingXY 10 3 ] <| text <| "distance: " ++ getDistance ar.origin.location ar.destinatin.location ++ "km"
+        , el [ paddingXY 10 3 ] <| text <| "from: " ++ airportToString (getPort ar.origin)
+        , el [ paddingXY 10 3 ] <| text <| "to: " ++ airportToString (getPort ar.origin)
+        , el [ paddingXY 10 3 ] <| text <| "distance: " ++ String.fromInt (getDistance getPort ar.origin ar.destination) ++ " km"
         ]
 
 
-length : List a -> String
-length list =
-    list
+getAirPortById : Dict AirportId Airport -> AirportId -> Maybe Airport
+getAirPortById airports id =
+    Dict.get id airports
+
+
+length : Dict k v -> String
+length dict =
+    dict
+        |> Dict.keys
         |> List.length
         |> String.fromInt
 
 
-getDistance : Coordinates -> Coordinates -> String
-getDistance loc1 loc2 =
-    distance loc1 loc2 Kilometers
-        |> round
-        |> String.fromInt
+getDistance : (AirportId -> Maybe Airport) -> AirportId -> AirportId -> Int
+getDistance getPort id1 id2 =
+    case ( getPort id1, getPort id2 ) of
+        ( Just port1, Just port2 ) ->
+            distance port1.location port2.location Kilometers
+                |> round
+
+        _ ->
+            0
 
 
-airportToString : Airport -> String
+airportToString : Maybe Airport -> String
 airportToString ap =
-    ap.name
+    case ap of
+        Just { id, name, city, location } ->
+            name ++ city
+
+        Nothing ->
+            "Nothing here"
 
 
 locToString : Coordinates -> String
@@ -216,7 +266,7 @@ main =
         { view = view
         , init = \_ -> init
         , update = update
-        , subscriptions = always Sub.none
+        , subscriptions = subscriptions
         }
 
 
@@ -224,11 +274,38 @@ main =
 -- DECODE
 
 
-dataToAirports : String -> List Airport
-dataToAirports data =
-    data
-        |> Csv.split
-        |> List.map buildAirport
+parseOneAirport : Dict AirportId Airport -> List (List String) -> ( Dict AirportId Airport, List (List String) )
+parseOneAirport dict data =
+    case data of
+        first :: rest ->
+            let
+                airport =
+                    buildAirport first
+            in
+            ( Dict.insert airport.id airport dict, rest )
+
+        _ ->
+            ( dict, data )
+
+
+parseOneRoute : List Route -> List (List String) -> Dict AirportId Airport -> ( List Route, List (List String) )
+parseOneRoute list data airports =
+    case data of
+        first :: rest ->
+            let
+                route =
+                    buildRoute (getAirPortById airports) first
+
+                shortList =
+                    route
+                        :: list
+                        |> List.sortBy .distance
+                        |> List.take 10
+            in
+            ( shortList, rest )
+
+        _ ->
+            ( list, data )
 
 
 buildAirport : List String -> Airport
@@ -247,16 +324,25 @@ buildAirport list =
     }
 
 
-dataToAirRoutes : List Airport -> String -> List AirRoute
-dataToAirRoutes ports data =
-    data
-        |> Csv.split
-        |> List.map buildAirRoute
-        |> List.map (assembleRoute ports)
+buildRoute : (AirportId -> Maybe Airport) -> List String -> Route
+buildRoute getPort list =
+    let
+        intermediate =
+            buildRouteIntermediate list
+
+        actual =
+            { airlineId = intermediate.airlineId
+            , airline = intermediate.airline
+            , origin = intermediate.originId
+            , destination = intermediate.destinatinId
+            , distance = getDistance getPort intermediate.originId intermediate.destinatinId
+            }
+    in
+    actual
 
 
-buildAirRoute : List String -> AirRouteIntermediate
-buildAirRoute list =
+buildRouteIntermediate : List String -> RouteIntermediate
+buildRouteIntermediate list =
     let
         a =
             Array.fromList list
@@ -266,22 +352,6 @@ buildAirRoute list =
     , originId = Maybe.withDefault 0 (String.toInt (Maybe.withDefault "0" (Array.get 3 a)))
     , destinatinId = Maybe.withDefault 0 (String.toInt (Maybe.withDefault "0" (Array.get 5 a)))
     }
-
-
-assembleRoute : List Airport -> AirRouteIntermediate -> AirRoute
-assembleRoute ports route =
-    let
-        origin =
-            List.filter (airportHasThisId route.originId) ports
-                |> List.head
-                |> Maybe.withDefault Data.arlanda
-
-        destination =
-            List.filter (airportHasThisId route.originId) ports
-                |> List.head
-                |> Maybe.withDefault Data.arlanda
-    in
-    AirRoute route.airlineId route.airline origin destination (round <| distance origin.location destination.location Kilometers)
 
 
 airportHasThisId : Int -> Airport -> Bool
@@ -297,17 +367,48 @@ getAirports =
         }
 
 
-getAirRoutes : Cmd Msg
-getAirRoutes =
+getRoutes : Cmd Msg
+getRoutes =
     Http.get
         { url = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/routes.dat"
         , expect = Http.expectString GotRoutes
         }
 
 
-type alias IntermediateAirRoute =
-    { airlineId : String
+type alias IntermediateRoute =
+    { airlineId : AirlineId
     , flightNr : String
     , origin : Int
     , destinatin : Int
+    }
+
+
+
+-- EXTRAS
+
+
+type alias AirlineId =
+    Int
+
+
+type alias RouteId =
+    Int
+
+
+type alias AirportId =
+    Int
+
+
+initialModel : Model
+initialModel =
+    { routes = []
+    , airports = Dict.empty
+    , state = Init
+    , toDisplay = []
+    , airportData = []
+    , routeData = []
+    , aniMsg = []
+    , timeZone = Time.utc
+    , time = Time.millisToPosix 0
+    , speed = 1
     }
