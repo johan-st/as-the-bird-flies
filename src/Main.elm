@@ -288,6 +288,10 @@ parseOneAirport dict data =
             ( dict, data )
 
 
+
+--TODO: CREATE DICT??
+
+
 parseOneRoute : List Route -> List (List String) -> Dict AirportId Airport -> ( List Route, List (List String) )
 parseOneRoute list data airports =
     case data of
