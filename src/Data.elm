@@ -3,10 +3,10 @@ module Data exposing (..)
 
 toDisplayList =
     List.repeat 10
-        { airlineId = "NaN-AIR"
-        , flightNr = "Nr9999"
+        { airlineId = 1
+        , airline = "SUS"
         , origin =
-            { id = "ARN"
+            { id = 1
             , name = "Arlanda"
             , city = "Stockholm"
             , location =
@@ -15,7 +15,7 @@ toDisplayList =
                 )
             }
         , destinatin =
-            { id = "OSL"
+            { id = 2
             , name = "Oslo Lufthavn"
             , city = "Oslo"
             , location =
@@ -23,4 +23,16 @@ toDisplayList =
                 , 11.0502
                 )
             }
+        , distance = 99
         }
+
+
+arlanda =
+    { id = 1
+    , name = "Arlanda"
+    , city = "Stockholm"
+    , location =
+        ( 59.651901245117
+        , 17.918600082397
+        )
+    }

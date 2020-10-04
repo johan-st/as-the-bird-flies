@@ -11,6 +11,7 @@
             "elm/html": "1.0.0",
             "elm/http": "2.0.0",
             "fbonetti/elm-geodesy": "2.0.0",
+            "lovasoa/elm-csv": "1.1.7",
             "mdgriffith/elm-ui": "1.1.8"
         },
         "indirect": {
