@@ -11,7 +11,6 @@ import Element.Font as Font
 import Geodesy exposing (Coordinates, Unit(..), distance)
 import Html exposing (Html)
 import Http
-import Task exposing (Task)
 import Time exposing (Posix)
 
 
@@ -105,6 +104,7 @@ update msg model =
                         splitData =
                             data |> Csv.split
                     in
+                    -- ( { model | airportData = splitData, aniMsg = List.repeat 1000 ParsePort }, getRoutes )
                     ( { model | airportData = splitData, aniMsg = List.repeat (List.length splitData) ParsePort }, getRoutes )
 
                 Err err ->
@@ -184,7 +184,7 @@ view model =
 
 resultTable : Model -> Element Msg
 resultTable model =
-    column [ centerX ] <| List.map (routeView model.airports) model.toDisplay
+    column [ centerX ] <| List.map (routeView model.airports) model.routes
 
 
 statusRow : Model -> Element Msg
@@ -299,8 +299,7 @@ parseOneRoute list data airports =
                 shortList =
                     route
                         :: list
-                        |> List.sortBy .distance
-                        |> List.take 10
+                        |> List.take 100
             in
             ( shortList, rest )
 
