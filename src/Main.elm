@@ -32,7 +32,6 @@ type alias Model =
     , toDisplay : List Route
     , airportData : List (List String)
     , routeData : List (List String)
-    , routeData2 : List (List String)
     , aniMsg : List AniMsg
     , timeZone : Time.Zone
     , time : Posix
@@ -74,11 +73,10 @@ type alias RouteIntermediate =
 
 init : ( Model, Cmd Msg )
 init =
-    ( initialModel, Cmd.batch [ getRoutes ] )
+    ( initialModel, Cmd.batch [ getAirports, getRoutes ] )
 
 
 
--- getAirports,
 ---- UPDATE ----
 
 
@@ -147,7 +145,6 @@ update msg model =
                                 | airports = airports
                                 , airportData = airportData
                                 , routes = routes
-                                , routeData2 = routeData
                                 , routeData = routeData
                                 , state = LoadingData
                               }
@@ -201,9 +198,9 @@ resultTable model =
             paragraph [ padding 100 ]
                 [ text "Building Dictionaries from airports and routes. "
                 , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size model.airports))
-                , text " airports and "
+                , text " airports (ca:7400) and "
                 , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size model.routes))
-                , text " done so far."
+                , text " unique routes (ca:23000) done so far."
                 ]
 
         CalculatingDistances longest ->
@@ -213,7 +210,11 @@ resultTable model =
                 ]
 
         Succeded ->
-            column [ centerX ] <| List.map (routeView model.airports) model.toDisplay
+            row [ width fill ]
+                [ column [ Font.center, Font.size 5 ] <| List.map (routeView model.airports) model.toDisplay
+
+                -- , column [] <| List.map airportView (Dict.values model.airports)
+                ]
 
         Failed ->
             Debug.todo "State: Failed"
@@ -221,7 +222,7 @@ resultTable model =
 
 statusRow : Model -> Element Msg
 statusRow model =
-    row [ paddingXY 200 30, spacing 50, alignRight ]
+    row [ paddingXY 200 30, spacing 50, alignRight, Font.color (rgb 0.3 0.3 0.3) ]
         [ el [] <| text <| "airports: " ++ String.fromInt (Dict.size model.airports)
         , el [] <| text <| "routes: " ++ String.fromInt (Dict.size model.routes)
         ]
@@ -241,8 +242,8 @@ routeView airports ar =
         ]
 
 
-airportView : ( AirportId, Airport ) -> Element Msg
-airportView ( id, airport ) =
+airportView : Airport -> Element Msg
+airportView airport =
     row [ Font.size 15, Font.color (rgb 0.4 0.4 0.4), width fill ]
         [ el [ paddingXY 10 3 ] <| row [] [ el [] <| text "id: ", el [ Font.color (rgb 0.5 0.2 0) ] <| text (String.fromInt airport.id) ]
         , el [ paddingXY 10 3 ] <| row [] [ el [] <| el [ Font.color (rgb 0.5 0.2 0) ] <| text airport.name ]
@@ -454,9 +455,8 @@ initialModel =
     , toDisplay = []
     , airportData = []
     , routeData = []
-    , routeData2 = []
     , aniMsg = []
     , timeZone = Time.utc
     , time = Time.millisToPosix 0
-    , speed = 5
+    , speed = 1
     }
