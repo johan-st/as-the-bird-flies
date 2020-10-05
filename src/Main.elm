@@ -7,9 +7,11 @@ import Dict exposing (Dict, empty, get)
 import Element exposing (..)
 import Element.Background as BG
 import Element.Font as Font
+import Element.Input as Input
 import Geodesy exposing (Coordinates, Unit(..), distance)
-import Html exposing (Html)
+import Html exposing (Html, a)
 import Http
+import Task
 import Time exposing (Posix)
 
 
@@ -26,7 +28,6 @@ type Status
 
 type alias Model =
     { routes : Dict RouteId Route
-    , routeDistance : Dict RouteId Int
     , airports : Dict AirportId Airport
     , state : Status
     , toDisplay : List Route
@@ -73,7 +74,7 @@ type alias RouteIntermediate =
 
 init : ( Model, Cmd Msg )
 init =
-    ( initialModel, Cmd.batch [ getAirports, getRoutes ] )
+    ( initialModel, Cmd.batch [ getAirports, getRoutes, Task.perform AdjustTimeZone Time.here ] )
 
 
 
@@ -90,8 +91,9 @@ type AniMsg
 type Msg
     = GotAirports (Result Http.Error String)
     | GotRoutes (Result Http.Error String)
-    | AdjustTimeZone Time.Zone
+    | LongestSelected
     | Tick Posix
+    | AdjustTimeZone Time.Zone
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -104,13 +106,9 @@ update msg model =
                         splitData =
                             data |> Csv.split
                     in
-                    ( { model | airportData = splitData }, Cmd.none )
+                    ( { model | airports = parseAllAirports splitData }, Cmd.none )
 
                 Err err ->
-                    let
-                        debug =
-                            Debug.log "get airports failed" err
-                    in
                     ( model, Cmd.none )
 
         GotRoutes result ->
@@ -120,60 +118,64 @@ update msg model =
                         splitData =
                             data |> Csv.split
                     in
-                    ( { model | routeData = splitData }, Cmd.none )
+                    ( { model | routes = parseAllRoutes splitData }, Cmd.none )
 
                 Err err ->
-                    let
-                        debug =
-                            Debug.log "getting air routes failed" err
-                    in
                     ( model, Cmd.none )
 
-        Tick _ ->
-            case model.airportData of
-                head :: tail ->
-                    case model.routeData of
-                        rhead :: rtail ->
-                            let
-                                ( airports, airportData ) =
-                                    parseOneAirport model.airports model.airportData
+        Tick time ->
+            ( { model | time = time }, Cmd.none )
 
-                                ( routes, routeData ) =
-                                    parseOneRoute model.routes model.routeData
-                            in
-                            ( { model
-                                | airports = airports
-                                , airportData = airportData
-                                , routes = routes
-                                , routeData = routeData
-                                , state = LoadingData
-                              }
-                            , Cmd.none
-                            )
+        LongestSelected ->
+            let
+                updatedRoutes =
+                    model.routes
+                        |> Dict.map (addDistancesDict (getAirPortById model.airports))
 
-                        [] ->
-                            ( model, Cmd.none )
-
-                [] ->
-                    case model.routeData of
-                        rhead :: rtail ->
-                            let
-                                ( routes, routeData ) =
-                                    parseOneRoute model.routes model.routeData
-                            in
-                            ( { model | routes = routes, routeData = routeData, state = LoadingData }, Cmd.none )
-
-                        [] ->
-                            let
-                                distances =
-                                    Dict.map (getDist (getAirPortById model.airports)) model.routes
-                            in
-                            ( { model | state = CalculatingDistances 0, routeDistance = distances }, Cmd.none )
+                longestFlights =
+                    Dict.foldl longestExtractor [] updatedRoutes
+            in
+            ( { model | routes = updatedRoutes, toDisplay = longestFlights }, Cmd.none )
 
         AdjustTimeZone newZone ->
             ( { model | timeZone = newZone }
             , Cmd.none
             )
+
+
+longestExtractor : RouteId -> Route -> List Route -> List Route
+longestExtractor id route res =
+    route
+        :: res
+        |> List.sortBy .distance
+        |> List.reverse
+        |> List.take 10
+
+
+routeById : Dict RouteId Route -> RouteId -> Maybe Route
+routeById routes id =
+    Dict.get id routes
+
+
+addDistancesDict : (AirportId -> Maybe Airport) -> RouteId -> Route -> Route
+addDistancesDict getAirport _ route =
+    let
+        airport1 =
+            getAirport route.origin
+
+        airport2 =
+            getAirport route.destination
+    in
+    case ( airport1, airport2 ) of
+        ( Just a1, Just a2 ) ->
+            let
+                dist =
+                    round <| distance a1.location a2.location Kilometers
+            in
+            { route | distance = dist }
+
+        _ ->
+            { route | distance = 9 }
 
 
 getDist : (AirportId -> Maybe Airport) -> RouteId -> Route -> Int
@@ -214,31 +216,25 @@ view model =
 
 resultTable : Model -> Element Msg
 resultTable model =
-    case model.state of
-        LoadingData ->
-            paragraph [ padding 100 ]
-                [ text "Building Dictionaries from airports and routes. "
-                , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size model.airports))
-                , text " airports (ca:7400) and "
-                , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size model.routes))
-                , text " unique routes (ca:23000) done so far."
-                ]
+    column []
+        [ paragraph [ paddingXY 100 10 ]
+            [ text "Built Dictionaries from airports and routes data. There is "
+            , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size model.airports))
+            , text " airports  and "
+            , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size model.routes))
+            , text " unique routes. "
+            , Input.button [ Font.underline ]
+                { onPress = Just LongestSelected
+                , label = text "Longest"
+                }
+            ]
+        , column
+            [ width fill, Font.center, Font.size 24, paddingXY 100 20 ]
+          <|
+            List.map (routeView model.airports) model.toDisplay
 
-        CalculatingDistances longest ->
-            paragraph [ padding 100 ]
-                [ text "Calculating distances on geodesic and the longest s far is "
-                , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt longest)
-                ]
-
-        Succeded ->
-            row [ width fill ]
-                [ column [ Font.center, Font.size 5 ] <| List.map (routeView model.airports) model.toDisplay
-
-                -- , column [] <| List.map airportView (Dict.values model.airports)
-                ]
-
-        Failed ->
-            Debug.todo "State: Failed"
+        -- , column [] <| List.map airportView (Dict.values model.airports)
+        ]
 
 
 statusRow : Model -> Element Msg
@@ -255,17 +251,16 @@ routeView airports ar =
         getPort =
             getAirPortById airports
     in
-    row [ Font.size 15, Font.color (rgb 0.4 0.4 0.4) ]
-        [ el [ paddingXY 10 3 ] <| row [] [ el [] <| text "airline: ", el [] <| text ar.airline ]
-        , el [ paddingXY 10 3 ] <| row [] [ el [] <| text "from: ", el [] <| text (airportToString (getPort ar.origin)) ]
-        , el [ paddingXY 10 3 ] <| row [] [ el [] <| text "to: ", el [] <| text (airportToString (getPort ar.destination)) ]
-        , el [ paddingXY 10 3 ] <| row [] [ el [ alignRight ] <| text "distance: ", el [ Font.color (rgb 0.5 0.2 0) ] <| text (String.fromInt ar.distance ++ " km") ]
+    row [ width fill, spaceEvenly, Font.color (rgb 0.5 0.5 0.5) ]
+        [ el [ paddingXY 10 3 ] <| row [] [ el [] <| text "from: ", el [ Font.color (rgb 0.8 0.8 0) ] <| text (airportToString (getPort ar.origin)) ]
+        , el [ paddingXY 10 3 ] <| row [] [ el [] <| text "to: ", el [ Font.color (rgb 0.8 0.8 0) ] <| text (airportToString (getPort ar.destination)) ]
+        , el [ paddingXY 10 3 ] <| row [] [ el [ alignRight ] <| text "distance: ", el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt ar.distance ++ " km") ]
         ]
 
 
 airportView : Airport -> Element Msg
 airportView airport =
-    row [ Font.size 15, Font.color (rgb 0.4 0.4 0.4), width fill ]
+    row [ width fill, spaceEvenly, Font.color (rgb 0.5 0.5 0.5) ]
         [ el [ paddingXY 10 3 ] <| row [] [ el [] <| text "id: ", el [ Font.color (rgb 0.5 0.2 0) ] <| text (String.fromInt airport.id) ]
         , el [ paddingXY 10 3 ] <| row [] [ el [] <| el [ Font.color (rgb 0.5 0.2 0) ] <| text airport.name ]
         , el [ paddingXY 10 3 ] <| row [] [ el [ alignRight ] <| text "city: ", el [ Font.color (rgb 0.5 0.2 0) ] <| text airport.city ]
@@ -337,6 +332,24 @@ parseOneAirport dict data =
             ( dict, data )
 
 
+parseAllAirports : List (List String) -> Dict AirportId Airport
+parseAllAirports data =
+    let
+        airports =
+            data
+                |> List.map buildAirportTuple
+                |> Dict.fromList
+    in
+    airports
+
+
+parseAllRoutes : List (List String) -> Dict RouteId Route
+parseAllRoutes data =
+    data
+        |> List.map buildRouteTuple
+        |> Dict.fromList
+
+
 parseOneRoute : Dict RouteId Route -> List (List String) -> ( Dict RouteId Route, List (List String) )
 parseOneRoute dict data =
     case data of
@@ -352,23 +365,6 @@ parseOneRoute dict data =
 
         _ ->
             ( dict, data )
-
-
-parseOneRouteList : List Route -> List (List String) -> ( List Route, List (List String) )
-parseOneRouteList list data =
-    case data of
-        head :: tail ->
-            let
-                route =
-                    buildRoute head
-
-                newList =
-                    route :: list
-            in
-            ( newList, tail )
-
-        _ ->
-            ( list, data )
 
 
 createRouteId : Route -> RouteId
@@ -398,6 +394,46 @@ buildAirport list =
         , Maybe.withDefault 0 (String.toFloat (Maybe.withDefault "0" (Array.get 7 a)))
         )
     }
+
+
+buildAirportTuple : List String -> ( AirportId, Airport )
+buildAirportTuple list =
+    let
+        a =
+            Array.fromList list
+
+        id =
+            Maybe.withDefault 0 (String.toInt (Maybe.withDefault "0" (Array.get 0 a)))
+
+        name =
+            Maybe.withDefault "Not Found" (Array.get 1 a)
+
+        city =
+            Maybe.withDefault "Not Found" (Array.get 2 a)
+
+        location =
+            ( Maybe.withDefault 0 (String.toFloat (Maybe.withDefault "0" (Array.get 6 a)))
+            , Maybe.withDefault 0 (String.toFloat (Maybe.withDefault "0" (Array.get 7 a)))
+            )
+    in
+    ( id, { id = id, name = name, city = city, location = location } )
+
+
+buildRouteTuple : List String -> ( RouteId, Route )
+buildRouteTuple list =
+    let
+        intermediate =
+            buildRouteIntermediate list
+
+        actual =
+            { airlineId = intermediate.airlineId
+            , airline = intermediate.airline
+            , origin = intermediate.originId
+            , destination = intermediate.destinatinId
+            , distance = 0
+            }
+    in
+    ( createRouteId actual, actual )
 
 
 buildRoute : List String -> Route
@@ -470,7 +506,6 @@ type alias AirportId =
 initialModel : Model
 initialModel =
     { routes = Dict.empty
-    , routeDistance = Dict.empty
     , airports = Dict.empty
     , state = LoadingData
     , toDisplay = []
