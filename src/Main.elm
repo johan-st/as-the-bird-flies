@@ -7,21 +7,21 @@ import Dict exposing (Dict, empty, get)
 import Element exposing (..)
 import Element.Background as BG
 import Element.Font as Font
-import Element.Input as Input
 import Geodesy exposing (Coordinates, Unit(..), distance)
 import Html exposing (Html)
-import Http
+import Http exposing (Error(..))
 
 
 
 ---- MODEL ----
 
 
-type alias Model =
-    { routes : Dict RouteId Route
-    , airports : Dict AirportId Airport
-    , toDisplay : List Route
-    }
+type Model
+    = Loading
+    | AirportsLoaded (Dict AirportId Airport)
+    | RoutesLoaded (Dict RouteId Route)
+    | BothLoaded (Dict AirportId Airport) (Dict RouteId Route) (List Route)
+    | Failed Http.Error
 
 
 type alias Airport =
@@ -51,7 +51,7 @@ type alias RouteIntermediate =
 
 init : ( Model, Cmd Msg )
 init =
-    ( initialModel, Cmd.batch [ getAirports, getRoutes ] )
+    ( Loading, Cmd.batch [ getAirports, getRoutes ] )
 
 
 
@@ -66,8 +66,6 @@ subscriptions _ =
 type Msg
     = GotAirports (Result Http.Error String)
     | GotRoutes (Result Http.Error String)
-    | LongestSelected
-    | ShortestSelected
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -77,47 +75,57 @@ update msg model =
             case result of
                 Ok data ->
                     let
-                        splitData =
-                            data |> Csv.split
+                        airports =
+                            data |> Csv.split |> parseAllAirports
                     in
-                    ( { model | airports = parseAllAirports splitData }, Cmd.none )
+                    case model of
+                        Loading ->
+                            ( AirportsLoaded airports, Cmd.none )
 
-                Err _ ->
-                    ( model, Cmd.none )
+                        RoutesLoaded routes ->
+                            let
+                                distRoutes =
+                                    routes
+                                        |> Dict.map (addDistancesDict (getAirPortById airports))
+
+                                longestFlights =
+                                    Dict.foldl longestExtractor [] distRoutes
+                            in
+                            ( BothLoaded airports distRoutes longestFlights, Cmd.none )
+
+                        _ ->
+                            ( model, Cmd.none )
+
+                Err err ->
+                    ( Failed err, Cmd.none )
 
         GotRoutes result ->
             case result of
                 Ok data ->
                     let
-                        splitData =
-                            data |> Csv.split
+                        routes =
+                            data |> Csv.split |> parseAllRoutes
                     in
-                    ( { model | routes = parseAllRoutes splitData }, Cmd.none )
+                    case model of
+                        Loading ->
+                            ( RoutesLoaded routes, Cmd.none )
 
-                Err _ ->
-                    ( model, Cmd.none )
+                        AirportsLoaded airports ->
+                            let
+                                distRoutes =
+                                    routes
+                                        |> Dict.map (addDistancesDict (getAirPortById airports))
 
-        LongestSelected ->
-            let
-                updatedRoutes =
-                    model.routes
-                        |> Dict.map (addDistancesDict (getAirPortById model.airports))
+                                longestFlights =
+                                    Dict.foldl longestExtractor [] distRoutes
+                            in
+                            ( BothLoaded airports distRoutes longestFlights, Cmd.none )
 
-                longestFlights =
-                    Dict.foldl longestExtractor [] updatedRoutes
-            in
-            ( { model | routes = updatedRoutes, toDisplay = longestFlights }, Cmd.none )
+                        _ ->
+                            ( model, Cmd.none )
 
-        ShortestSelected ->
-            let
-                updatedRoutes =
-                    model.routes
-                        |> Dict.map (addDistancesDict (getAirPortById model.airports))
-
-                longestFlights =
-                    Dict.foldl shortestExtractor [] updatedRoutes
-            in
-            ( { model | routes = updatedRoutes, toDisplay = longestFlights }, Cmd.none )
+                Err err ->
+                    ( Failed err, Cmd.none )
 
 
 
@@ -146,60 +154,72 @@ getRoutes =
 
 view : Model -> Html Msg
 view model =
-    Element.layout [ BG.color (rgb 0.1 0.1 0.1), Font.color (rgb 0.8 0.8 0.8) ]
-        (column [ width fill ]
-            [ statusRow model
-            , resultTable model
-            ]
-        )
+    case model of
+        Failed err ->
+            Element.layout
+                [ BG.color (rgb 0.1 0.1 0.1), Font.color (rgb 0.8 0.8 0.8) ]
+                (column [ width fill, centerY ]
+                    [ errView err
+                    ]
+                )
+
+        _ ->
+            Element.layout [ BG.color (rgb 0.1 0.1 0.1), Font.color (rgb 0.8 0.8 0.8) ]
+                (column [ width fill, centerY ]
+                    [ resultTable model
+                    ]
+                )
 
 
 resultTable : Model -> Element Msg
 resultTable model =
-    column [ width fill ]
-        [ paragraph [ width fill, Font.center ]
-            [ text "Built Dictionaries from airports and routes data. There is "
-            , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size model.airports))
-            , text " airports  and "
-            , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size model.routes))
-            , text " unique routes. "
-            ]
-        , row [ centerX, spacing 20 ]
-            [ Input.button [ Font.underline ]
-                { onPress = Just LongestSelected
-                , label = text "Longest"
-                }
-            , Input.button [ Font.underline ]
-                { onPress = Just ShortestSelected
-                , label = text "Shortest"
-                }
-            ]
-        , column
-            [ width fill, Font.center, Font.size 18, paddingXY 100 20 ]
-          <|
-            List.map (routeView model.airports) model.toDisplay
-        ]
+    case model of
+        BothLoaded airports routes longestFlights ->
+            column [ width fill ]
+                [ el [ Font.color (rgb 1 0.5 0), Font.size 60, centerX ] <| text "Done"
+                , paragraph [ width fill, Font.center ]
+                    [ text "Built Dictionaries from airports and routes data. There is "
+                    , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size airports))
+                    , text " airports  and "
+                    , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size routes))
+                    , text " unique routes in the data set."
+                    ]
+                , column
+                    [ width fill, Font.center, Font.size 18, paddingXY 100 20 ]
+                  <|
+                    List.map (routeView airports) longestFlights
+                ]
 
-
-statusRow : Model -> Element Msg
-statusRow model =
-    row [ paddingXY 200 30, spacing 50, alignRight, Font.color (rgb 0.3 0.3 0.3) ]
-        [ el [] <| text <| "airports: " ++ String.fromInt (Dict.size model.airports)
-        , el [] <| text <| "routes: " ++ String.fromInt (Dict.size model.routes)
-        ]
+        _ ->
+            el [ Font.color (rgb 1 0.5 0), Font.size 60, centerX ] <| text "Processing..."
 
 
 routeView : Dict AirportId Airport -> Route -> Element Msg
 routeView airports ar =
-    let
-        getPort =
-            getAirPortById airports
-    in
     row [ width fill, spaceEvenly, Font.color (rgb 0.5 0.5 0.5) ]
-        [ el [ paddingXY 10 3 ] <| row [] [ el [] <| text "from: ", el [ Font.color (rgb 0.8 0.8 0) ] <| text (airportToString (getPort ar.origin)) ]
-        , el [ paddingXY 10 3 ] <| row [] [ el [] <| text "to: ", el [ Font.color (rgb 0.8 0.8 0) ] <| text (airportToString (getPort ar.destination)) ]
+        [ el [ paddingXY 10 3 ] <| row [] [ el [] <| text "from: ", el [ Font.color (rgb 0.8 0.8 0) ] <| text (airportToString (getAirPortById airports ar.origin)) ]
+        , el [ paddingXY 10 3 ] <| row [] [ el [] <| text "to: ", el [ Font.color (rgb 0.8 0.8 0) ] <| text (airportToString (getAirPortById airports ar.destination)) ]
         , el [ paddingXY 10 3 ] <| row [] [ el [ alignRight ] <| text "distance: ", el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt ar.distance ++ " km") ]
         ]
+
+
+errView : Http.Error -> Element Msg
+errView err =
+    case err of
+        BadUrl msg ->
+            column [ centerX ] [ el [ Font.color (rgb 1 0 0), Font.size 60 ] (text "Bad Url"), el [] (text msg) ]
+
+        Timeout ->
+            column [ centerX ] [ el [ Font.color (rgb 1 0 0), Font.size 45 ] (text "Connection timed out.") ]
+
+        NetworkError ->
+            column [ centerX ] [ el [ Font.color (rgb 1 0 0), Font.size 30 ] (text "No network detected. Are you online?") ]
+
+        BadStatus code ->
+            column [ centerX ] [ el [ Font.color (rgb 1 0 0), Font.size 60 ] (text "Bad Status"), el [] (text (String.fromInt code)) ]
+
+        BadBody msg ->
+            column [ centerX ] [ el [ Font.color (rgb 1 0 0), Font.size 60 ] (text "Bad Body"), el [] (text msg) ]
 
 
 
@@ -208,13 +228,9 @@ routeView airports ar =
 
 parseAllAirports : List (List String) -> Dict AirportId Airport
 parseAllAirports data =
-    let
-        airports =
-            data
-                |> List.map buildAirportTuple
-                |> Dict.fromList
-    in
-    airports
+    data
+        |> List.map buildAirportTuple
+        |> Dict.fromList
 
 
 parseAllRoutes : List (List String) -> Dict RouteId Route
@@ -222,19 +238,6 @@ parseAllRoutes data =
     data
         |> List.map buildRouteTuple
         |> Dict.fromList
-
-
-createRouteId : Route -> RouteId
-createRouteId r =
-    let
-        id =
-            if r.origin < r.destination then
-                r.origin * 10000 + r.destination
-
-            else
-                r.destination * 10000 + r.origin
-    in
-    id
 
 
 buildAirportTuple : List String -> ( AirportId, Airport )
@@ -302,6 +305,15 @@ type alias RouteId =
     Int
 
 
+createRouteId : Route -> RouteId
+createRouteId r =
+    if r.origin < r.destination then
+        r.origin * 10000 + r.destination
+
+    else
+        r.destination * 10000 + r.origin
+
+
 type alias AirportId =
     Int
 
@@ -328,18 +340,6 @@ longestExtractor _ route res =
         |> List.sortBy .distance
         |> List.reverse
         |> List.take 10
-
-
-shortestExtractor : RouteId -> Route -> List Route -> List Route
-shortestExtractor _ route res =
-    if route.distance == 0 then
-        res
-
-    else
-        route
-            :: res
-            |> List.sortBy .distance
-            |> List.take 10
 
 
 addDistancesDict : (AirportId -> Maybe Airport) -> RouteId -> Route -> Route
@@ -375,11 +375,3 @@ main =
         , update = update
         , subscriptions = subscriptions
         }
-
-
-initialModel : Model
-initialModel =
-    { routes = Dict.empty
-    , airports = Dict.empty
-    , toDisplay = []
-    }
