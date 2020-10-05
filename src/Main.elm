@@ -164,12 +164,33 @@ update msg model =
                             ( { model | routes = routes, routeData = routeData, state = LoadingData }, Cmd.none )
 
                         [] ->
-                            ( { model | state = CalculatingDistances 0 }, Cmd.none )
+                            let
+                                distances =
+                                    Dict.map (getDist (getAirPortById model.airports)) model.routes
+                            in
+                            ( { model | state = CalculatingDistances 0, routeDistance = distances }, Cmd.none )
 
         AdjustTimeZone newZone ->
             ( { model | timeZone = newZone }
             , Cmd.none
             )
+
+
+getDist : (AirportId -> Maybe Airport) -> RouteId -> Route -> Int
+getDist idToPort id r =
+    let
+        airport1 =
+            idToPort r.origin
+
+        airport2 =
+            idToPort r.destination
+    in
+    case ( airport1, airport2 ) of
+        ( Just a1, Just a2 ) ->
+            round <| distance a1.location a2.location Kilometers
+
+        _ ->
+            0
 
 
 
