@@ -1,4 +1,4 @@
-module Main exposing (..)
+module Main exposing (init, main)
 
 import Array
 import Browser
@@ -11,32 +11,16 @@ import Element.Input as Input
 import Geodesy exposing (Coordinates, Unit(..), distance)
 import Html exposing (Html)
 import Http
-import Task
-import Time exposing (Posix)
 
 
 
 ---- MODEL ----
 
 
-type Status
-    = LoadingData
-    | CalculatingDistances Int
-    | Succeded
-    | Failed
-
-
 type alias Model =
     { routes : Dict RouteId Route
     , airports : Dict AirportId Airport
-    , state : Status
     , toDisplay : List Route
-    , airportData : List (List String)
-    , routeData : List (List String)
-    , aniMsg : List AniMsg
-    , timeZone : Time.Zone
-    , time : Posix
-    , speed : Float
     }
 
 
@@ -46,13 +30,6 @@ type alias Airport =
     , city : String
     , location : Coordinates
     }
-
-
-portToString : Airport -> List String
-portToString ap =
-    [ ap.name
-    , ap.city
-    ]
 
 
 type alias Route =
@@ -74,18 +51,16 @@ type alias RouteIntermediate =
 
 init : ( Model, Cmd Msg )
 init =
-    ( initialModel, Cmd.batch [ getAirports, getRoutes, Task.perform AdjustTimeZone Time.here ] )
+    ( initialModel, Cmd.batch [ getAirports, getRoutes ] )
 
 
 
 ---- UPDATE ----
 
 
-type AniMsg
-    = ParsePort
-    | DoneParsePort
-    | ParseRoute
-    | DoneParseRoute
+subscriptions : Model -> Sub Msg
+subscriptions _ =
+    Sub.none
 
 
 type Msg
@@ -93,8 +68,6 @@ type Msg
     | GotRoutes (Result Http.Error String)
     | LongestSelected
     | ShortestSelected
-    | Tick Posix
-    | AdjustTimeZone Time.Zone
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -109,7 +82,7 @@ update msg model =
                     in
                     ( { model | airports = parseAllAirports splitData }, Cmd.none )
 
-                Err err ->
+                Err _ ->
                     ( model, Cmd.none )
 
         GotRoutes result ->
@@ -121,11 +94,8 @@ update msg model =
                     in
                     ( { model | routes = parseAllRoutes splitData }, Cmd.none )
 
-                Err err ->
+                Err _ ->
                     ( model, Cmd.none )
-
-        Tick time ->
-            ( { model | time = time }, Cmd.none )
 
         LongestSelected ->
             let
@@ -149,83 +119,29 @@ update msg model =
             in
             ( { model | routes = updatedRoutes, toDisplay = longestFlights }, Cmd.none )
 
-        AdjustTimeZone newZone ->
-            ( { model | timeZone = newZone }
-            , Cmd.none
-            )
 
 
-longestExtractor : RouteId -> Route -> List Route -> List Route
-longestExtractor id route res =
-    route
-        :: res
-        |> List.sortBy .distance
-        |> List.reverse
-        |> List.take 10
+-- COMMANDS
 
 
-shortestExtractor : RouteId -> Route -> List Route -> List Route
-shortestExtractor id route res =
-    if route.distance == 0 then
-        res
-
-    else
-        route
-            :: res
-            |> List.sortBy .distance
-            |> List.take 10
+getAirports : Cmd Msg
+getAirports =
+    Http.get
+        { url = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat"
+        , expect = Http.expectString GotAirports
+        }
 
 
-routeById : Dict RouteId Route -> RouteId -> Maybe Route
-routeById routes id =
-    Dict.get id routes
-
-
-addDistancesDict : (AirportId -> Maybe Airport) -> RouteId -> Route -> Route
-addDistancesDict getAirport _ route =
-    let
-        airport1 =
-            getAirport route.origin
-
-        airport2 =
-            getAirport route.destination
-    in
-    case ( airport1, airport2 ) of
-        ( Just a1, Just a2 ) ->
-            let
-                dist =
-                    round <| distance a1.location a2.location Kilometers
-            in
-            { route | distance = dist }
-
-        _ ->
-            { route | distance = 0 }
-
-
-getDist : (AirportId -> Maybe Airport) -> RouteId -> Route -> Int
-getDist idToPort id r =
-    let
-        airport1 =
-            idToPort r.origin
-
-        airport2 =
-            idToPort r.destination
-    in
-    case ( airport1, airport2 ) of
-        ( Just a1, Just a2 ) ->
-            round <| distance a1.location a2.location Kilometers
-
-        _ ->
-            0
+getRoutes : Cmd Msg
+getRoutes =
+    Http.get
+        { url = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/routes.dat"
+        , expect = Http.expectString GotRoutes
+        }
 
 
 
--- -- SUBSCRIPTION -- --
-
-
-subscriptions : Model -> Sub Msg
-subscriptions model =
-    Time.every model.speed Tick
+--  View
 
 
 view : Model -> Html Msg
@@ -286,78 +202,8 @@ routeView airports ar =
         ]
 
 
-airportView : Airport -> Element Msg
-airportView airport =
-    row [ width fill, spaceEvenly, Font.color (rgb 0.5 0.5 0.5) ]
-        [ el [ paddingXY 10 3 ] <| row [] [ el [] <| text "id: ", el [ Font.color (rgb 0.5 0.2 0) ] <| text (String.fromInt airport.id) ]
-        , el [ paddingXY 10 3 ] <| row [] [ el [] <| el [ Font.color (rgb 0.5 0.2 0) ] <| text airport.name ]
-        , el [ paddingXY 10 3 ] <| row [] [ el [ alignRight ] <| text "city: ", el [ Font.color (rgb 0.5 0.2 0) ] <| text airport.city ]
-        ]
 
-
-getAirPortById : Dict AirportId Airport -> AirportId -> Maybe Airport
-getAirPortById airports id =
-    Dict.get id airports
-
-
-getDistance : (AirportId -> Maybe Airport) -> AirportId -> AirportId -> Int
-getDistance getPort id1 id2 =
-    case ( getPort id1, getPort id2 ) of
-        ( Just port1, Just port2 ) ->
-            distance port1.location port2.location Kilometers
-                |> round
-
-        _ ->
-            0
-
-
-airportToString : Maybe Airport -> String
-airportToString ap =
-    case ap of
-        Just { id, name, city, location } ->
-            name
-
-        Nothing ->
-            "[N/A]"
-
-
-locToString : Coordinates -> String
-locToString loc =
-    String.fromFloat
-        (Tuple.first loc)
-        ++ String.fromFloat (Tuple.second loc)
-
-
-
----- PROGRAM ----
-
-
-main : Program () Model Msg
-main =
-    Browser.element
-        { view = view
-        , init = \_ -> init
-        , update = update
-        , subscriptions = subscriptions
-        }
-
-
-
--- DECODE
-
-
-parseOneAirport : Dict AirportId Airport -> List (List String) -> ( Dict AirportId Airport, List (List String) )
-parseOneAirport dict data =
-    case data of
-        first :: rest ->
-            let
-                airport =
-                    buildAirport first
-            in
-            ( Dict.insert airport.id airport dict, rest )
-
-        _ ->
-            ( dict, data )
+-- PARSE
 
 
 parseAllAirports : List (List String) -> Dict AirportId Airport
@@ -378,23 +224,6 @@ parseAllRoutes data =
         |> Dict.fromList
 
 
-parseOneRoute : Dict RouteId Route -> List (List String) -> ( Dict RouteId Route, List (List String) )
-parseOneRoute dict data =
-    case data of
-        next :: rest ->
-            let
-                route =
-                    buildRoute next
-
-                newDict =
-                    Dict.insert (createRouteId route) route dict
-            in
-            ( newDict, rest )
-
-        _ ->
-            ( dict, data )
-
-
 createRouteId : Route -> RouteId
 createRouteId r =
     let
@@ -406,22 +235,6 @@ createRouteId r =
                 r.destination * 10000 + r.origin
     in
     id
-
-
-buildAirport : List String -> Airport
-buildAirport list =
-    let
-        a =
-            Array.fromList list
-    in
-    { id = Maybe.withDefault 0 (String.toInt (Maybe.withDefault "0" (Array.get 0 a)))
-    , name = Maybe.withDefault "Not Found" (Array.get 1 a)
-    , city = Maybe.withDefault "Not Found" (Array.get 2 a)
-    , location =
-        ( Maybe.withDefault 0 (String.toFloat (Maybe.withDefault "0" (Array.get 6 a)))
-        , Maybe.withDefault 0 (String.toFloat (Maybe.withDefault "0" (Array.get 7 a)))
-        )
-    }
 
 
 buildAirportTuple : List String -> ( AirportId, Airport )
@@ -464,23 +277,6 @@ buildRouteTuple list =
     ( createRouteId actual, actual )
 
 
-buildRoute : List String -> Route
-buildRoute list =
-    let
-        intermediate =
-            buildRouteIntermediate list
-
-        actual =
-            { airlineId = intermediate.airlineId
-            , airline = intermediate.airline
-            , origin = intermediate.originId
-            , destination = intermediate.destinatinId
-            , distance = 0
-            }
-    in
-    actual
-
-
 buildRouteIntermediate : List String -> RouteIntermediate
 buildRouteIntermediate list =
     let
@@ -492,27 +288,6 @@ buildRouteIntermediate list =
     , originId = Maybe.withDefault 0 (String.toInt (Maybe.withDefault "0" (Array.get 3 a)))
     , destinatinId = Maybe.withDefault 0 (String.toInt (Maybe.withDefault "0" (Array.get 5 a)))
     }
-
-
-airportHasThisId : Int -> Airport -> Bool
-airportHasThisId id aPort =
-    aPort.id == id
-
-
-getAirports : Cmd Msg
-getAirports =
-    Http.get
-        { url = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/airports.dat"
-        , expect = Http.expectString GotAirports
-        }
-
-
-getRoutes : Cmd Msg
-getRoutes =
-    Http.get
-        { url = "https://raw.githubusercontent.com/jpatokal/openflights/master/data/routes.dat"
-        , expect = Http.expectString GotRoutes
-        }
 
 
 
@@ -531,16 +306,80 @@ type alias AirportId =
     Int
 
 
+getAirPortById : Dict AirportId Airport -> AirportId -> Maybe Airport
+getAirPortById airports id =
+    Dict.get id airports
+
+
+airportToString : Maybe Airport -> String
+airportToString ap =
+    case ap of
+        Just { name } ->
+            name
+
+        Nothing ->
+            "[N/A]"
+
+
+longestExtractor : RouteId -> Route -> List Route -> List Route
+longestExtractor _ route res =
+    route
+        :: res
+        |> List.sortBy .distance
+        |> List.reverse
+        |> List.take 10
+
+
+shortestExtractor : RouteId -> Route -> List Route -> List Route
+shortestExtractor _ route res =
+    if route.distance == 0 then
+        res
+
+    else
+        route
+            :: res
+            |> List.sortBy .distance
+            |> List.take 10
+
+
+addDistancesDict : (AirportId -> Maybe Airport) -> RouteId -> Route -> Route
+addDistancesDict getAirport _ route =
+    let
+        airport1 =
+            getAirport route.origin
+
+        airport2 =
+            getAirport route.destination
+    in
+    case ( airport1, airport2 ) of
+        ( Just a1, Just a2 ) ->
+            let
+                dist =
+                    round <| distance a1.location a2.location Kilometers
+            in
+            { route | distance = dist }
+
+        _ ->
+            { route | distance = 0 }
+
+
+
+---- PROGRAM ----
+
+
+main : Program () Model Msg
+main =
+    Browser.element
+        { view = view
+        , init = \_ -> init
+        , update = update
+        , subscriptions = subscriptions
+        }
+
+
 initialModel : Model
 initialModel =
     { routes = Dict.empty
     , airports = Dict.empty
-    , state = LoadingData
     , toDisplay = []
-    , airportData = []
-    , routeData = []
-    , aniMsg = []
-    , timeZone = Time.utc
-    , time = Time.millisToPosix 0
-    , speed = 1
     }
