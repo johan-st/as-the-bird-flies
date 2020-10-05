@@ -9,7 +9,7 @@ import Element.Background as BG
 import Element.Font as Font
 import Element.Input as Input
 import Geodesy exposing (Coordinates, Unit(..), distance)
-import Html exposing (Html, a)
+import Html exposing (Html)
 import Http
 import Task
 import Time exposing (Posix)
@@ -262,8 +262,6 @@ resultTable model =
             [ width fill, Font.center, Font.size 18, paddingXY 100 20 ]
           <|
             List.map (routeView model.airports) model.toDisplay
-
-        -- , column [] <| List.map airportView (Dict.values model.airports)
         ]
 
 
