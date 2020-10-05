@@ -92,6 +92,7 @@ type Msg
     = GotAirports (Result Http.Error String)
     | GotRoutes (Result Http.Error String)
     | LongestSelected
+    | ShortestSelected
     | Tick Posix
     | AdjustTimeZone Time.Zone
 
@@ -137,6 +138,17 @@ update msg model =
             in
             ( { model | routes = updatedRoutes, toDisplay = longestFlights }, Cmd.none )
 
+        ShortestSelected ->
+            let
+                updatedRoutes =
+                    model.routes
+                        |> Dict.map (addDistancesDict (getAirPortById model.airports))
+
+                longestFlights =
+                    Dict.foldl shortestExtractor [] updatedRoutes
+            in
+            ( { model | routes = updatedRoutes, toDisplay = longestFlights }, Cmd.none )
+
         AdjustTimeZone newZone ->
             ( { model | timeZone = newZone }
             , Cmd.none
@@ -150,6 +162,18 @@ longestExtractor id route res =
         |> List.sortBy .distance
         |> List.reverse
         |> List.take 10
+
+
+shortestExtractor : RouteId -> Route -> List Route -> List Route
+shortestExtractor id route res =
+    if route.distance == 0 then
+        res
+
+    else
+        route
+            :: res
+            |> List.sortBy .distance
+            |> List.take 10
 
 
 routeById : Dict RouteId Route -> RouteId -> Maybe Route
@@ -175,7 +199,7 @@ addDistancesDict getAirport _ route =
             { route | distance = dist }
 
         _ ->
-            { route | distance = 9 }
+            { route | distance = 0 }
 
 
 getDist : (AirportId -> Maybe Airport) -> RouteId -> Route -> Int
@@ -216,20 +240,26 @@ view model =
 
 resultTable : Model -> Element Msg
 resultTable model =
-    column []
-        [ paragraph [ paddingXY 100 10 ]
+    column [ width fill ]
+        [ paragraph [ width fill, Font.center ]
             [ text "Built Dictionaries from airports and routes data. There is "
             , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size model.airports))
             , text " airports  and "
             , el [ Font.color (rgb 1 0.5 0) ] <| text (String.fromInt (Dict.size model.routes))
             , text " unique routes. "
-            , Input.button [ Font.underline ]
+            ]
+        , row [ centerX, spacing 20 ]
+            [ Input.button [ Font.underline ]
                 { onPress = Just LongestSelected
                 , label = text "Longest"
                 }
+            , Input.button [ Font.underline ]
+                { onPress = Just ShortestSelected
+                , label = text "Shortest"
+                }
             ]
         , column
-            [ width fill, Font.center, Font.size 24, paddingXY 100 20 ]
+            [ width fill, Font.center, Font.size 18, paddingXY 100 20 ]
           <|
             List.map (routeView model.airports) model.toDisplay
 
